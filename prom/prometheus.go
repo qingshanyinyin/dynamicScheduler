@@ -2,8 +2,8 @@ package prom
 
 import (
 	"context"
+	"dynamicScheduler/utils"
 	"fmt"
-	"k8s.io/klog"
 	"os"
 	"strings"
 	"time"
@@ -20,7 +20,12 @@ var (
 	Node_load15 string = fmt.Sprintf("node_load15{job='%s'}", promethesuJob)
 	Node_load5 string = fmt.Sprintf("node_load5{job='%s'}", promethesuJob)
 	Node_load1 string = fmt.Sprintf("node_load1{job='%s'}", promethesuJob)
+	//节点过去一分钟cpu 使用率
+	Node_cpu1 string=fmt.Sprintf("(1-(sum(increase(node_cpu_seconds_total{job='%v' ,mode=\"idle\"}[1m]))by(instance))/(sum(increase(node_cpu_seconds_total{job='%s'}[1m]))by(instance)))*100",promethesuJob,promethesuJob)
+	//查询内存使用使用率
+    Node_mem string=fmt.Sprintf("(1 - (node_memory_MemAvailable_bytes{job='%v'} / (node_memory_MemTotal_bytes{job='%s'})))* 100",promethesuJob,promethesuJob)
 )
+
 
 
 
@@ -28,11 +33,11 @@ var (
 func QueryRebuild(v1api v1.API,ctx context.Context, query string, ts time.Time) ([]map[string]string ,bool){
 	result, warnings, err := v1api.Query(ctx, query, ts)
 	if err != nil {
-		klog.Error("Error querying Prometheus: %s\n", err)
+		utils.Log.Error("Error querying Prometheus: %s\n", err)
 		os.Exit(1)
 	}
 	if len(warnings) > 0 {
-		klog.Error("Warnings: %v\n", warnings)
+		utils.Log.Error("Warnings: %v\n", warnings)
 	}
 
 	if result.String() !=""{
@@ -40,10 +45,11 @@ func QueryRebuild(v1api v1.API,ctx context.Context, query string, ts time.Time) 
 		resultSliceMap := ConvertResultDataType(resultslice)
 		return resultSliceMap ,true
 	}else{
-		klog.Errorf("查询promql有问题,promsql返回结果为:nil,%v",result)
+		utils.Log.Errorf("查询promql有问题,promsql返回结果为:nil,%v",result)
 		return  nil ,false
 	}
 }
+
 
 
 // clinet_golang 访问prometheus返回结果为string
