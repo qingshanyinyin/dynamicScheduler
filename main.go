@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"io"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,26 +31,28 @@ var (
 	FitSelectorAndAlreadyLabelPresureNodes     []*v1.Node //符合标签选择器，
 	FitSelectorAndAlreadyLabelPresureNodeNames []string   //集群内已经上压力的node Names
 	FitSelectorNodes                           []*v1.Node //根据标签选择器获取的当前node slice
-
-	presureNodesNameFromProm  []string
-	count ,scrape_interval int
-	cpuThreshold,memThreshold float64
-	promAddress string
+	presureNodesNameFromProm                   []string
+	count, scrape_interval                    int
+	cpuThreshold, memThreshold                 float64
+	promAddress,webaddr                                string
 
 )
 
-type Mappintstruct struct {
-	Node *v1.Node
-	tag  string
+type Response struct {
+	Type      string   `json:"type"`
+	Num       int      `json:"num"`
+	NodeNames []string `json:"node_names"`
 }
 
-
-func init(){
-	flag.Float64Var(&cpuThreshold,"cpu",10.00,"节点过去一分钟使用率阈值 (-cpu 10)")
-	flag.Float64Var(&memThreshold,"mem",10.00,"节点内存使用率阈值 (-mem 10)")
-	flag.IntVar(&scrape_interval,"s",10,"每次抓取prometheus metrics间隔（-s 10)")
-	flag.StringVar(&promAddress,"prom","http://121.40.224.66:49090","prometheus链接地址(-prom http://121.40.224.66:49090)")
+func init() {
+	flag.Float64Var(&cpuThreshold, "cpu", 60.00, "节点过去一分钟使用率阈值 (-cpu 10)")
+	flag.Float64Var(&memThreshold, "mem", 80.00, "节点内存使用率阈值 (-mem 10)")
+	flag.IntVar(&scrape_interval, "s", 10, "每次抓取prometheus metrics间隔（-s 10)")
+	flag.StringVar(&promAddress, "prom", "http://121.40.224.66:49090", "prometheus链接地址(-prom http://121.40.224.66:49090)")
+	flag.StringVar(&webaddr, "webaddr", ":9000", "启动服务端口地址(-webaddr :9000)")
+	flag.StringVar(&prom.PrometheusJob, "promjob", "测试环境k8s资源节点监控", "promtheus采集的node节点job名称(-promjob 测试环境k8s资源节点监控)")
 }
+
 func main() {
 	utils.Log.Info("hello")
 	ctx := context.Background()
@@ -66,31 +70,61 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+
 	// create the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err.Error())
+		os.Exit(0)
 	}
 
 	//2.prometheus 客户都初始化
 	client, err := api.NewClient(api.Config{
-		Address: "http://121.40.224.66:49090",
+		Address: promAddress,
 	})
 	if err != nil {
 		utils.Log.Error("Error creating client: %v\n", err)
 		os.Exit(1)
 	}
 	v1api := promv1.NewAPI(client)
-
 	//3.k8s NewSharedInfomerFactory
 	factory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
-
 	//4.跟据prometheus获取对应的metrics项目，发现超出的阈值的节点，则给其打上type=presure标签
 	LabelNodeByPromMetrics(stopCh, factory, ctx, clientset, v1api, scrape_interval)
+	// 设置多路复用处理函数, 为了健康检查
+	mux := http.NewServeMux()
+	mux.HandleFunc("/nodes", ListPresureNodes)
+	mux.HandleFunc("/status", Healyth)
+	// 设置服务器
+	server := &http.Server{
+		Addr:    webaddr,
+		Handler: mux,
+	}
+	// 设置服务器监听请求端口
+	server.ListenAndServe()
 
 	<-stopCh
+
 }
 
+// 设置多个处理器函数
+func ListPresureNodes(w http.ResponseWriter, r *http.Request) {
+	response := Response{
+		Type:      "Label type=presure Nodes",
+		Num:       len(FitSelectorAndAlreadyLabelPresureNodeNames),
+		NodeNames: FitSelectorAndAlreadyLabelPresureNodeNames,
+	}
+	jsonbyte, err := json.Marshal(response)
+	if err != nil {
+		utils.Log.Error("struct --> json", err)
+	}
+	io.WriteString(w, string(jsonbyte))
+
+}
+
+func Healyth(w http.ResponseWriter, r *http.Request) {
+	io.WriteString(w, "ok")
+}
 
 
 func LabelNodeByPromMetrics(stopCh <-chan struct{}, factory informers.SharedInformerFactory,
@@ -106,38 +140,36 @@ func LabelNodeByPromMetrics(stopCh <-chan struct{}, factory informers.SharedInfo
 		return
 	}
 	//2.node selector, 返回打了others和persure节点*[]v1.Node
-	nodeOthersSlice := []string{"others"}
+	//nodeOthersSlice := []string{"others"}
 	nodeOthersSlice2 := []string{"presure"}
-	selector, _ := labels.NewRequirement("type", selection.In, nodeOthersSlice)
+	//selector, _ := labels.NewRequirement("type", selection.In, nodeOthersSlice)
 	selector2, _ := labels.NewRequirement("status", selection.In, nodeOthersSlice2)
 	//3.go程循环监听prometheus,根据metrics跟node加上label
 	go func() {
 		for {
-			count=count+1
-			now:=time.Now()
-			utils.Log.Infof("Staring,id=%v",count)
+			count = count + 1
+			now := time.Now()
+			utils.Log.Infof("Staring,id=%v", count)
 			//查询所有节点all
 			FitSelectorNodes, _ = nodeInformer.Lister().List(labels.NewSelector())
-			// 监控使用，查看节点内已经打赏presure节点的node
-			FitSelectorAndAlreadyLabelPresureNodes, _ = nodeInformer.Lister().List(labels.NewSelector().Add(*selector, *selector2))
+			// 监控使用，查看节点内已经打上presure节点的node
+			FitSelectorAndAlreadyLabelPresureNodes, _ = nodeInformer.Lister().List(labels.NewSelector().Add(*selector2))
 			FitSelectorAndAlreadyLabelPresureNodeNames = []string{} //清空所有的Nodes
 			for i := 0; i < len(FitSelectorAndAlreadyLabelPresureNodes); i++ {
 				FitSelectorAndAlreadyLabelPresureNodeNames = append(FitSelectorAndAlreadyLabelPresureNodeNames, FitSelectorAndAlreadyLabelPresureNodes[i].Name)
 			}
 			//3.1获取超出阈值的node节点 names
-			presureNodesNameFromProm =[]string{} // 清空presureNodesName nodes
+			presureNodesNameFromProm = []string{} // 清空presureNodesName nodes
 			//3.2计算过去一分钟cpu的使用率
 			utils.Log.Info("============Cpu==========")
 			resultFromPromSilceMap, _ := prom.QueryRebuild(v1api, ctx, prom.Node_cpu1, time.Now())
-			UpperPresureNodeNames := CountUpperPresureNodeFromProm(resultFromPromSilceMap, cpuThreshold,"cpu")
-			utils.Log.Infof("Cpu使用率超过%v的节点列表：%v",cpuThreshold,UpperPresureNodeNames)
+			UpperPresureNodeNames := CountUpperPresureNodeFromProm(resultFromPromSilceMap, cpuThreshold, "cpu")
+			utils.Log.Infof("Cpu使用率超过%v的节点列表：%v", cpuThreshold, UpperPresureNodeNames)
 			//3.3计算mem使用率
 			utils.Log.Info("============Mem==========")
 			resultFromPromSilceMapMem, _ := prom.QueryRebuild(v1api, ctx, prom.Node_mem, time.Now())
-			UpperPresureNodeNames =CountUpperPresureNodeFromProm(resultFromPromSilceMapMem,30.00,"mem")
-			utils.Log.Infof("Mem 使用率超过阈值%v的节点列表: %v ",memThreshold,UpperPresureNodeNames)
-
-
+			UpperPresureNodeNames = CountUpperPresureNodeFromProm(resultFromPromSilceMapMem, memThreshold, "mem")
+			utils.Log.Infof("Mem 使用率超过阈值%v的节点列表: %v ", memThreshold, UpperPresureNodeNames)
 			utils.Log.Info("============Label==========")
 			//3.2清空v1.Node列表(打赏presure标签的Nodes和去掉标签的Nodes)
 			ReadyForLabelPresure := []*v1.Node{}
@@ -152,13 +184,14 @@ func LabelNodeByPromMetrics(stopCh <-chan struct{}, factory informers.SharedInfo
 				}
 			}
 			//3.4 label status=presure 和去掉 status=presure
-			utils.Log.Info("--------打上presure标签-------")
+			utils.Log.Info("打上presure标签:")
 			PatchNode(clientset, ctx, "presure", ReadyForLabelPresure)
-			utils.Log.Info("--------去掉presure标签-------")
+			utils.Log.Info("去掉presure标签：")
 			PatchNode(clientset, ctx, "nil", ReadyForLabelNil)
 
-			utils.Log.Infof("Ending,id=%v,耗时%v",count,time.Since(now))
-			utils.Log.Info("------------------------------------")
+			utils.Log.Infof("当前有%d个节点已经处于status=presure状态: %v", len(FitSelectorAndAlreadyLabelPresureNodeNames), FitSelectorAndAlreadyLabelPresureNodeNames)
+			utils.Log.Infof("Ending,id=%v,耗时%v", count, time.Since(now))
+			utils.Log.Info("<-------------------------------------->")
 
 			time.Sleep(time.Second * time.Duration(scrape_interval))
 		}
@@ -193,25 +226,25 @@ func PatchNode(clientset *kubernetes.Clientset, ctx context.Context, selection s
 			_, err := clientset.CoreV1().Nodes().Patch(ctx, Nodes[i].Name, types.StrategicMergePatchType, patchdata, metav1.PatchOptions{})
 			if err == nil {
 				utils.Log.Infof("给节点%s打type=%s标签成功", Nodes[i].Name, selection)
-			}else{
+			} else {
 
 				utils.Log.Errorf("给节点%s打%s标签失败，错误为%v", Nodes[i].Name, selection, err)
 			}
-		}else{
-			utils.Log.Infof("%s节点为master节点，不参与平衡调度标签策略",Nodes[i].Name)
+		} else {
+			utils.Log.Infof("%s节点为master节点，不参与平衡调度标签策略", Nodes[i].Name)
 		}
 
 	}
 }
 
 // 根据n阈值，筛选超出阈值node节点（master和slave)
-func CountUpperPresureNodeFromProm(resultFromPromSilceMap []map[string]string, threshold float64,metricName string) []string {
+func CountUpperPresureNodeFromProm(resultFromPromSilceMap []map[string]string, threshold float64, metricName string) []string {
 	for i := 0; i < len(resultFromPromSilceMap); i++ {
 		currentMetrics, _ := strconv.ParseFloat(resultFromPromSilceMap[i]["value"], 64)
-		utils.Log.Infof("%s节点当前%s使用率为: %v",resultFromPromSilceMap[i]["instance"], metricName,currentMetrics)
+		utils.Log.Infof("%s节点当前%s使用率为: %v", resultFromPromSilceMap[i]["instance"], metricName, currentMetrics)
 		// 判断负载值是否
 		if currentMetrics > threshold {
-			if !IsExitArray(resultFromPromSilceMap[i]["instance"],presureNodesNameFromProm){
+			if !IsExitArray(resultFromPromSilceMap[i]["instance"], presureNodesNameFromProm) {
 				presureNodesNameFromProm = append(presureNodesNameFromProm, resultFromPromSilceMap[i]["instance"])
 			}
 		}

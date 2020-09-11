@@ -16,14 +16,14 @@ import (
 
 // promethues merics
 var (
-	promethesuJob="测试环境k8s资源节点监控"
-	Node_load15 string = fmt.Sprintf("node_load15{job='%s'}", promethesuJob)
-	Node_load5 string = fmt.Sprintf("node_load5{job='%s'}", promethesuJob)
-	Node_load1 string = fmt.Sprintf("node_load1{job='%s'}", promethesuJob)
+	PrometheusJob="测试环境k8s资源节点监控"
+	Node_load15 string = fmt.Sprintf("node_load15{job='%s'}", PrometheusJob)
+	Node_load5 string = fmt.Sprintf("node_load5{job='%s'}", PrometheusJob)
+	Node_load1 string = fmt.Sprintf("node_load1{job='%s'}", PrometheusJob)
 	//节点过去一分钟cpu 使用率
-	Node_cpu1 string=fmt.Sprintf("(1-(sum(increase(node_cpu_seconds_total{job='%v' ,mode=\"idle\"}[1m]))by(instance))/(sum(increase(node_cpu_seconds_total{job='%s'}[1m]))by(instance)))*100",promethesuJob,promethesuJob)
+	Node_cpu1 string=fmt.Sprintf("(1-(sum(increase(node_cpu_seconds_total{job='%v' ,mode=\"idle\"}[1m]))by(instance))/(sum(increase(node_cpu_seconds_total{job='%s'}[1m]))by(instance)))*100",PrometheusJob,PrometheusJob)
 	//查询内存使用使用率
-    Node_mem string=fmt.Sprintf("(1 - (node_memory_MemAvailable_bytes{job='%v'} / (node_memory_MemTotal_bytes{job='%s'})))* 100",promethesuJob,promethesuJob)
+    Node_mem string=fmt.Sprintf("(1 - (node_memory_MemAvailable_bytes{job='%v'} / (node_memory_MemTotal_bytes{job='%s'})))* 100",PrometheusJob,PrometheusJob)
 )
 
 
