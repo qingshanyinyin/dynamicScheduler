@@ -6,6 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"os"
 	"time"
+	"path/filepath"
 )
 
 var Log = logrus.New()
@@ -13,7 +14,8 @@ var Log = logrus.New()
 func init() {
 	// 为当前logrus实例设置消息的输出,同样地,
 	// 可以设置logrus实例的输出到任意io.writer
-	logName:=fmt.Sprintf("logs/dynamic-%v.log",time.Now().Format("2006-01-02"))
+        dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	logName:=fmt.Sprintf("%s/logs/dynamic-%v.log",dir,time.Now().Format("2006-01-02"))
 	fmt.Println(logName)
 	logfile,err:=os.OpenFile(logName, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err!=nil{
